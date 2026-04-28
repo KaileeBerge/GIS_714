@@ -54,6 +54,7 @@ mitch_points <- mitch_points %>%
 Mitch_Madtom <- mitch_points %>%
   filter(COM_NAME == "Carolina Madtom")
 
+Mitch_Madtom$CollectionYear <- as.numeric(Mitch_Madtom$CollectionYear)
 summary(Mitch_Madtom$CollectionYear)
 
 Mitch_Madtom_group1 <- Mitch_Madtom %>%
@@ -66,6 +67,9 @@ get_mode_function <- function(v) {
   uniqv[which.max(tabulate(match(v, uniqv)))]
 }
 get_mode_function(Mitch_Madtom_group1$CollectionYear)
+get_mode_function(Mitch_Madtom$CollectionYear)
+
+
 
 Mitch_Madtom_group1$CollectionMonth <- as.factor(Mitch_Madtom_group1$CollectionMonth)
 summary(Mitch_Madtom_group1$CollectionMonth)
@@ -180,7 +184,7 @@ ggplot() +
 
 #link to NLCD data
 nlcd_extract <- terra::extract(
-  landuse_2024,
+  landuse_2007,
   vect(Binded),
   fun = modal,        # most common land cover class within each polygon
   na.rm = TRUE,
@@ -218,6 +222,8 @@ presences <- Binded %>%
 n.presences <- nrow(presences)
 cat("Unique presence sites:", n.presences, "\n")
 
+table(presences$nlcd_label)
+table(Binded$nlcd_label)
 
 # 2. BACKGROUND POINTS ###################
 # Reproject study area to match Binded CRS if needed
@@ -243,7 +249,7 @@ background_pts <- drop_na(background_pts)
 
 #link to NLCD data
 nlcd_extract_background <- terra::extract(
-  landuse_2024,
+  landuse_2007,
   vect(background_pts),
   fun = modal,        # most common land cover class within each polygon
   na.rm = TRUE,
@@ -254,6 +260,26 @@ background_pts$nlcd_value <- nlcd_extract_background[, 2]  # column 1 is ID, col
 background_pts <- merge(background_pts, nlcd_classes, by = "nlcd_value", all.x = TRUE)
 
 head(background_pts)
+
+ggplot() +
+  geom_sf(data = nc, fill = NA) +
+  geom_sf(data = MajorHydro, color="lightblue") +
+  geom_sf(data = background_pts, aes(color = nlcd_value), size = 2) +   # points colored by seg_Id
+  scale_color_viridis_c(option = "plasma") +    # nice continuous color scale
+  theme_minimal() +
+  labs(title="Carolina Madtom Occurrences")
+
+summary(background_pts$nlcd_label)
+background_pts$nlcd_label <- as.factor(background_pts$nlcd_label)
+
+ggplot() +
+  geom_sf(data = nc, fill = NA) +
+  geom_sf(data = MajorHydro, color="lightblue") +
+  geom_sf(data = background_pts, aes(color = nlcd_label), size = 2) +   # points colored by seg_Id
+  #scale_color_viridis_c(option = "plasma") +    # nice continuous color scale
+  theme_minimal() +
+  labs(title="Carolina Madtom Occurrences")
+
 
 # 4. COMBINE PRESENCES + BACKGROUND ###########
 
@@ -280,8 +306,53 @@ all_sites <- bind_rows(presences, background_pts) %>%
 n.sites <- nrow(all_sites)
 cat("Total sites (presence + background):", n.sites, "\n")
 
+ggplot() +
+  geom_sf(data = nc, fill = NA) +
+  geom_sf(data = MajorHydro, color="lightblue") +
+  geom_sf(data = presences, aes(color = nlcd_label), size = 2) +   # points colored by seg_Id
+  #scale_color_viridis_c(option = "plasma") +    # nice continuous color scale
+  theme_minimal() +
+  labs(title="Carolina Madtom Occurrences")
+
+table(presences$nlcd_label)
+table(background_pts$nlcd_label)
+
+library(flextable)
+make_nlcd_flextable <- function(data, label) {
+  data.frame(table(data$nlcd_label)) |>
+    rename(`Land Cover Class` = Var1, Count = Freq) |>
+    mutate(`%` = paste0(round(Count / sum(Count) * 100, 1), "%")) |>
+    arrange(desc(Count)) |>
+    flextable() |>
+    set_caption(paste("NLCD Land Cover Distribution —", label)) |>
+    bold(part = "header") |>
+    autofit() |>
+    theme_booktabs()
+}
+
+# Save to .docx
+library(officer)
+doc <- read_docx() |>
+  body_add_flextable(make_nlcd_flextable(presences, "Presence Points")) |>
+  body_add_par("") |>
+  body_add_flextable(make_nlcd_flextable(background_pts, "Background Points"))
+
+print(doc, target = "nlcd_tables.docx")
+
+
+table(all_sites$nlcd_label)
+
+
+ggplot() +
+  geom_sf(data = nc, fill = NA) +
+  geom_sf(data = MajorHydro, color="lightblue") +
+  geom_sf(data = all_sites, aes(color = nlcd_label), size = 2) +   # points colored by seg_Id
+  #scale_color_viridis_c(option = "plasma") +    # nice continuous color scale
+  theme_minimal() +
+  labs(title="Carolina Madtom Occurrences")
+
 # 5. COORDINATES ####################
-coords <- all_sites %>%
+coords <- presences %>%
   st_centroid() %>%
   mutate(
     x = st_coordinates(.)[, 1],
@@ -291,15 +362,15 @@ coords <- all_sites %>%
   select(x, y) %>%
   as.matrix()
 
-unique_segs <- unique(all_sites$seg_id)
+unique_segs <- unique(presences$seg_id)
 n.segs      <- length(unique_segs)
-grid.index  <- match(all_sites$seg_id, unique_segs)
+grid.index  <- match(presences$seg_id, unique_segs)
 
 cat("Unique segments (spatial knots):", n.segs,           "\n")
 cat("Total records:                  ", nrow(all_sites),  "\n")
 
 # One coordinate pair per unique segment
-seg_coords <- all_sites %>%
+seg_coords <- presences %>%
   mutate(
     x = st_coordinates(st_centroid(.))[, 1],
     y = st_coordinates(st_centroid(.))[, 2]
@@ -319,27 +390,24 @@ seg_coords <- all_sites %>%
 stopifnot(!anyDuplicated(seg_coords))
 cat("Unique coordinate pairs confirmed:", nrow(seg_coords), "\n")
 
-# ============================================================
 # 2. REBUILD ALL DATA OBJECTS AT RECORD LEVEL
-# ============================================================
-
-n.sites <- nrow(all_sites)
-y       <- matrix(all_sites$presence, nrow = n.sites, ncol = 1)
+n.sites <- nrow(presences)
+y       <- matrix(presences$presence, nrow = n.sites, ncol = 1)
 
 # Occupancy covariates — one row per record
 # Save scaling parameters for use in prediction later
 hydro_means <- sapply(
-  all_sites %>% st_drop_geometry() %>% select(all_of(hydro_vars)),
+  presences %>% st_drop_geometry() %>% select(all_of(hydro_vars)),
   mean, na.rm = TRUE
 )
 hydro_sds <- sapply(
-  all_sites %>% st_drop_geometry() %>% select(all_of(hydro_vars)),
+  presences %>% st_drop_geometry() %>% select(all_of(hydro_vars)),
   sd, na.rm = TRUE
 )
 
 scale_with_params <- function(x, mn, sd) (x - mn) / sd
 
-occ.covs <- all_sites %>%
+occ.covs <- presences %>%
   st_drop_geometry() %>%
   mutate(
     ma3     = scale_with_params(ma3,     hydro_means["ma3"],     hydro_sds["ma3"]),
@@ -368,11 +436,10 @@ occ.covs <- drop_na(occ.covs)
 summary(occ.covs)
 
 # Detection covariates — one row per record #################
-
 roads_sf <-file.choose()
 roads_sf <- st_read(roads_sf)
 roads_sf <- st_transform(roads_sf, st_crs(all_sites))
-dist_to_road <- st_distance(st_centroid(all_sites), roads_sf) %>%
+dist_to_road <- st_distance(st_centroid(presences), roads_sf) %>%
   apply(1, min) %>%
   as.numeric()
 
@@ -440,6 +507,9 @@ out <- spPGOcc(
 )
 # 7. DIAGNOSTICS #######################
 summary(out)
+#residuals(out)
+#ppcOcc(out, "freeman-tukey",1)
+
 
 # Rhat < 1.1 and ESS > 400 for all parameters
 plot(out$beta.samples,  density = FALSE)   # occupancy coefficients
@@ -450,6 +520,7 @@ plot(out$theta.samples, density = FALSE)   # phi, sigma.sq
 ppc_out <- ppcOcc(out, fit.stat = "freeman-tukey", group = 1)
 summary(ppc_out)
 # Bayesian p-value ideally 0.1 – 0.9
+#Bayesian p-value:  0.6698 
 
 # Effective spatial range
 phi_samples <- out$theta.samples[, "phi"]
@@ -532,6 +603,7 @@ plot(density(3/theta[, "phi"]), main = "spatial range")
 # 8. PREDICT ACROSS FULL STUDY AREA###############
 
 #use stream segments for entire NC
+#use NC-streamSegments.shp
 nc_segments <-file.choose()
 nc_segments <- st_read(nc_segments)
 nc_segments <- st_transform(nc_segments, st_crs(all_sites))
@@ -542,10 +614,12 @@ nc_segments <- nc_segments %>%
 head(nc_segments)
 
 #reload in the stream data (previous was subset to only our stream segs w/ occurrence)
+#dynamic_GFDL-ESM2G_historical_r1i1p1_seg_1976_2005
+#note, try to find 2024 specific stream data
 stream_data_nc <- file.choose()
 stream_data_nc <- read.csv(stream_data_nc)
-stream_data_nc <- stream_data_nc %>%
-  rename(seg_id = seg_id_nat)
+#stream_data_nc <- stream_data_nc %>%
+#  rename(seg_id = seg_id_nat)
 head(stream_data_nc)
 
 pred_sites <- nc_segments %>%
@@ -587,6 +661,10 @@ pred_sites <- pred_sites %>%
     sum_mag = scale_with_params(sum_mag, hydro_means["sum_mag"], hydro_sds["sum_mag"])
   )
 
+
+
+
+
 # Design matrix — must match occ.formula exactly
 X.0 <- model.matrix(
   ~ ma3 + ml17 + dh1 + dl1 + fh1 + ra1 + spr_mag + sum_mag + nlcd_class,
@@ -621,7 +699,7 @@ pred_sites$psi_hi   <- apply(pred_out$psi.0.samples, 2, quantile, 0.975)
 # 9. MAP #####################
 ggplot(pred_sites) +
   geom_sf(data = nc, fill = NA) +
-  geom_sf(data = MajorHydro, color="lightblue") +
+  #geom_sf(data = MajorHydro, color="lightblue") +
   geom_sf(aes(color = psi_mean), size = 0.8) +
   scale_color_viridis_c(
     name   = "P(occupancy)",
@@ -809,7 +887,8 @@ ggplot(pred_wake) +
     limits = c(0, 1)
   ) +
   labs(
-    title = "Carolina Madtom predicted occupancy probability (Wake County)"
+    title = "Carolina Madtom occupancy",
+    subtitle = "BAU"
   ) +
   theme_minimal()
 
@@ -926,7 +1005,7 @@ ggplot(pred_wake_OPT) +
     limits = c(0, 1)
   ) +
   labs(
-    title = "Carolina Madtom predicted occupancy probability (Wake County)",
+    title = "Carolina Madtom occupancy",
     subtitle = "Optimistic"
   ) +
   theme_minimal()
@@ -1045,7 +1124,7 @@ ggplot(pred_wake_PESS) +
     limits = c(0, 1)
   ) +
   labs(
-    title = "Carolina Madtom predicted occupancy probability (Wake County)",
+    title = "Carolina Madtom occupancy",
     subtitle = "Pessimistic"
   ) +
   theme_minimal()
@@ -1054,13 +1133,24 @@ ggplot(pred_wake_PESS) +
 #plot new data
 ggplot(pred_sites_PESS) +
   geom_sf(data = nc, fill = NA) +
-  geom_sf(data = MajorHydro, color="gray") +
+  #geom_sf(data = MajorHydro, color="gray") +
   geom_sf(data = pred_sites_PESS, aes(color = dh1), size = 0.8) +
   scale_colour_distiller(palette = "RdBu")+
   labs(
-    title    = "Carolina Madtom predicted occupancy probability",
+    title    = "Pessimistic dh1",
   ) +
   theme_minimal()
+
+ggplot(pred_sites_OPT) +
+  geom_sf(data = nc, fill = NA) +
+  #geom_sf(data = MajorHydro, color="gray") +
+  geom_sf(data = pred_sites_OPT, aes(color = dh1), size = 0.8) +
+  scale_colour_distiller(palette = "RdBu")+
+  labs(
+    title    = "Optimistic dh1",
+  ) +
+  theme_minimal()
+
 
 #"ma3", "ml17", "dh1", "dl1",
 #"fh1, "ra1", "spr_mag", "sum_mag"
